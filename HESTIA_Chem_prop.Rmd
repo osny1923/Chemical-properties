@@ -741,6 +741,8 @@ QSAR_less <- QSAR_more %>%
 
 #longlist <- classification(get_uid(QSAR_less$Test.organisms..species., rank_query = 'genus', rows = 1, verbose =TRUE, , key = "90cf5bb525c0eb52c673fa933280b7248708"), , key = "90cf5bb525c0eb52c673fa933280b7248708")
 
+git_PAT <- "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"
+
                            
 ```
 
