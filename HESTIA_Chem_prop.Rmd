@@ -1,0 +1,746 @@
+---
+title: "Collated_chem_prop"
+author: "Oskar Nyberg"
+date: "2022 M01 13"
+output: pdf_document
+---
+
+#Dir & Libraries
+```{r setup}
+knitr::opts_knit$set(root.dir = "C:\\Users\\Oskar\\Box\\PhD\\Collaborations\\Pesticide inclusion in LCA\\Results folder\\")
+knitr::opts_chunk$set(eval = FALSE, message=FALSE, warning=FALSE)
+```
+
+```{r include=FALSE}
+# These libraries are used for analysis
+   #install.packages("webchem")
+   #install.packages("taxize")   #<- Installing the "taxize" library http://dx.doi.org/10.5281/zenodo.7097
+    
+    library(rmarkdown)
+    library(tidyverse)
+    library(readr)
+    library(kableExtra)
+    library(webchem)
+    library(taxize)
+
+```
+
+# DATA CLEANING
+
+Transpose all data to more easily read tables.
+Tanken är att dessa skall kunna slås samman för att enkelt strukturera en databas för HESTIAS pesticid-karatäriseringar.
+
+
+#CIR-Data Grab (CIR_Mol_w, CIR_name & CIR_Kow)
+
+Since the QSAR data retrieves molecular weights for each constituent in multi-constituent chemicals, i have no easy way to define the formula weight for a substance.
+Here I apply the package "webchem" which grabs data from online repositories based on chemical ID, such as CAS numbers, from Chemical Identifier Resolver (https://cactus.nci.nih.gov/chemical/structure_documentation).
+
+```{r, include=FALSE}
+  # Read the HESTIA list of chemials and fetch chemical information on these from CIR
+    # Importing the HESTIA db
+mol_w_tot <- read.csv("pesticideAI.csv", header = T, sep = ",") %>% 
+                      separate(term.id, c("cas.termstz","CAS.id"), sep = "CAS-", remove = FALSE)
+    # Create a list of the CAS.numbers
+CAS.list <- mol_w_tot %>% 
+            select(CAS.id) %>% 
+            rename(CAS.number = CAS.id)
+
+    # Perform the CIR_query to fetch information on chemicals.              
+      # WARNING - THIS OPERATION TAKES ABOUT SEVERAL HOURS!! cir_query has a hard coded timeout of 1 sec between queries. 17 000 sec x 3 properties equals 51K queries ~> 14 hours 
+HESTIA_CIR_data_1 <-  CAS.list %>% 
+              mutate(CIR_mol_weight = as.numeric(cir_query(CAS.list$CAS.number, "mw", match = "all", verbose = TRUE))
+                    )
+HESTIA_CIR_data_2 <-  CAS.list %>% 
+              mutate(CIR_name = as.character(cir_query(CAS.list$CAS.number, "names", match = "first", verbose = TRUE))
+                    )
+HESTIA_CIR_data_3 <-  CAS.list %>% 
+              mutate(CIR_Log_Kow = as.numeric(cir_query(CAS.list$CAS.number, "xlogp2", resolver = "cas_number", match = "first", verbose = TRUE)))  # WARNING - THIS OPERATION TAKES SEVERAL HOURS!!
+
+HESTIA_CIR_data <- HESTIA_CIR_data_1 %>% 
+                    left_join(., HESTIA_CIR_data_2, 
+                              by="CAS.number") %>% 
+                    left_join(., HESTIA_CIR_data_3, 
+                              by = "CAS.number")
+
+
+# This chemical informaion will be appended further down in the "Summary" section 
+
+```
+
+
+# EC50 dataset 
+
+filter and reduce to relevant
+Loading, and cleaning the 'QSAR tool' Ecotoxicity dataset.
+
+```{r}
+EC50_mort <- read.csv("Mortality_EC50_NOEC_LOEC.csv", header = T, sep = "\t", fileEncoding="UTF-16LE", stringsAsFactors=FALSE)
+
+   
+EC50_mort_df <- EC50_mort %>% 
+                  select(c(2:5), Endpoint, Test.type, Test.organisms..species., Kingdom, Phylum, Subphylum, Order, Family, Author, Lifestage, Water.type, Study.duration.MeanValue, Study.duration.Unit, Duration.MeanValue, Duration.Unit, Duration.Scale, Value.MeanValue, Value.Qualifier, Value.Unit, Value.Scale)
+   
+#EC50_mort_df$Value.MeanValue <-  as.numeric(gsub(",", ".", gsub("\\.", "", EC50_mort_df$Value.MeanValue)))
+
+  
+EC50_mort_df <- EC50_mort_df %>% 
+  mutate(Database = as.factor(Database), 
+         Endpoint = as.factor(Endpoint),
+         Test.type = as.factor(Test.type),
+         Lifestage = as.factor(Lifestage),
+         Test.organisms..species. = as.factor(Test.organisms..species.),
+         Kingdom = as.factor(Kingdom),
+         Phylum = as.factor(Phylum),
+         Subphylum = as.factor(Subphylum),
+         Order = as.factor(Order),
+         Family = as.factor(Family),
+         Water.type = as.factor(Water.type),
+         Duration.Unit = as.factor(Duration.Unit),
+         Value.Unit = as.factor(Value.Unit),
+         Duration.MeanValue = as.numeric(Duration.MeanValue),
+         Study.duration.MeanValue = as.numeric(Study.duration.MeanValue)#,
+         #Value.MeanValue = as.numeric(as.numeric(gsub(",", ".", gsub("\\.", "", Value.MeanValue)))) ##Do not run twice. this will impose incorrect numbering!!
+           ) %>% 
+          rename(CAS.number = CAS.Number)
+
+          # timeunits <- as.data.frame(unique(EC50_mort_df_sm$Duration.Unit)) # <- Just to get an idea of which time units exist in the object. 
+
+EC50_mort_CAS <- as.data.frame(unique(EC50_mort_df$CAS.number)) # How many CAS.numbers are represented in this list? 16708!
+
+timeunits <- as.data.frame(EC50_mort_df %>% # what type and how many of each time unit is reported. Here we find an alarmingly large portion of the data set lacking time data.
+                              count(Duration.Unit) 
+                           )
+time_data <- EC50_mort_df %>% #from the input EC50 data set, 21517 entries are missing time duration data. ca 600 of these have EC50 values noted.
+                        filter(Duration.Unit == "") 
+ 
+# trying to get a second column with 175 duration data points into the Duration.Unit column. Not working! 
+#mutate(Duration.MeanValue = case_when(Duration.MeanValue == "" ~ Study.duration.MeanValue,
+ #                                                               TRUE ~ Duration.MeanValue))  
+
+
+```
+
+
+
+#EC50 DATASET CLEANING, VALUE TRANSFORMATION, 'WATER_TYPE' CURATION
+
+Below begins additional cleaning and conversions of toxicity and duration data 
+Here I filter to get: 
+1. Translatable time units across
+2. Remove data points with no tox data available
+3. Test-duration is set as "NA"
+   Then i mutate the measurable time units to a comparable unit (hours)
+   Thereafter i subject the toxicity units to a filter:
+1. All possible conversions to mg/L  (ppm & ppb)
+2. Filter out all other toxicity units (%, g/kg / ng/egg etc.)
+   Then i have all values as mg/L i check for acute or chronic 
+1. Convert all acute toxicity data to chronic values according to USEtox ACR (chronic = acute/2)
+ 
+```{r}
+
+EC50_mort_df_sm <- EC50_mort_df %>% 
+                    filter(Duration.Unit %in% c("min", "h", "d", "wk", "mo", "yr"), 
+                           Value.MeanValue != "NA",
+                           Duration.MeanValue != "NA") %>% 
+                    mutate(Time.Hours = case_when(Duration.Unit == "min" ~ Duration.MeanValue/60,
+                                                  Duration.Unit == "h" ~ Duration.MeanValue*1,
+                                                  Duration.Unit == "d" ~ Duration.MeanValue*24,
+                                                  Duration.Unit == "wk" ~ Duration.MeanValue*(24*7),
+                                                  Duration.Unit == "mo" ~ Duration.MeanValue*(24*30),
+                                                  Duration.Unit == "yr" ~ Duration.MeanValue*(24*365))
+                           ) %>% 
+                    mutate(AcuteChronic = case_when(Time.Hours <= 168 ~ "Acute"
+                                                    ,Time.Hours >= 768 ~ "Chronic"
+                                                    ,TRUE ~ "sub-Chronic" 
+                                                    )
+                                                  ) %>% 
+                    mutate(AcuteChronic = as.factor(AcuteChronic)) %>% 
+                    mutate(Value.Unit = case_when(Value.Unit == "ppm" ~ "mg/L",
+                                                  TRUE ~ as.character(Value.Unit)
+                                                  ), 
+                           Value.Unit = as.factor(Value.Unit)
+                             ) %>% 
+                    mutate(Value.MeanValue = case_when(Value.Unit == "ppb" ~ Value.MeanValue*1000,
+                                                  TRUE ~ as.numeric(Value.MeanValue))
+                             ) %>% 
+                    mutate(Value.Unit = case_when(Value.Unit == "ppb" ~ "mg/L",
+                                                  TRUE ~ as.character(Value.Unit)
+                                                  )
+                             ) %>% 
+                    mutate(Acute.to.Chronic = case_when(AcuteChronic == "Acute" ~ Value.MeanValue/2,
+                                                        TRUE ~ as.numeric(Value.MeanValue)) # <- Applying the USEtox acute to chronic (ACR) ratio
+                           )
+
+species_view <- as.data.frame(EC50_mort_df_sm %>% 
+                                  count(Test.organisms..species., Water.type) 
+                                  )#%>% 
+      #write_excel_csv(species_view, "Species_list_EC50.csv", delim = ";" ) #<- Here is a list of Species occurrences and habitat preferences. This list was manually curated to fill in blank habitat preferences.
+      #### DO NOT OVERWRITE###
+      
+
+Species_water.type <- read.csv("Species_list_EC50.csv", sep = ",") #<- the manually curated list was imported from excel to fill in blanks in the 'EC50_mort_df_sm' data.frame
+
+Species_water.type <- Species_water.type %>% 
+    rename(Water.type_curated = Water.type, 
+           Test.organisms..species. = ï..Test.organisms..species.)
+
+EC50_mort_df_sm <- EC50_mort_df_sm %>% 
+                            left_join(Species_water.type, by="Test.organisms..species.") %>% 
+                            subset(select = c(1:27)) 
+                            #rename(Water.type_curated = Water.type_curated.x)
+
+
+
+```
+
+# TAXIZE PHYLOGENY COMPLEMENT
+
+There are tox-data plenty of data connected to our pesticide database. 
+  However, many missing parameters. For downstream applications, I will look up the taxonomic information for all species within the dataset, to simplify categorization into subphylum "vertebrate", "invertebrate", "plant" or "algae" according to USEtox parameterization of ecotoxicity data.
+ 
+ <Get citation information for taxize in R doing citation(package = 'taxize')>
+```{r}
+   
+Phylum_view  <- as.data.frame(EC50_mort_df_sm %>% 
+                                  count(Test.organisms..species., Phylum, Subphylum) %>% 
+                                    filter(Subphylum == "") %>% 
+                                    rename(Species = Test.organisms..species.)
+                                  )
+Phylum_view <- Phylum_view %>% 
+                        mutate(fam_name = Species) %>% 
+                        separate(fam_name, "fam_name", sep = " ") %>% 
+                        select(c(1,5,2:4)) 
+
+# list <- classification(get_uid(Phylum_view$fam_name, rank_query = 'genus', rows = 1, verbose =TRUE, key = "90cf5bb525c0eb52c673fa933280b7248708"), key = "90cf5bb525c0eb52c673fa933280b7248708") #if a "key = '' " value is missing, make sure to create an account and generate an API key on NCBI!! 
+{
+all_sp_df <- rbind(list)
+  
+all_sp_df_phyla <- all_sp_df %>%
+                      filter(rank == "phylum") 
+                              
+all_sp_df_phyla_2 <- all_sp_df %>%
+                      filter(rank == "genus")
+
+all_sp_df_phyla <- all_sp_df_phyla %>% 
+                      left_join(all_sp_df_phyla_2, by = "query") %>% 
+                      rename(fam_name = name.y, phylum = name.x) %>% 
+                      select(c(4,5,1)) %>% 
+                      distinct(fam_name, .keep_all = TRUE)
+
+Phylum_view <- Phylum_view %>%
+                      left_join(all_sp_df_phyla, by = "fam_name") %>% 
+                      select(c(1,2,7,3:6))
+
+EC50_mort_df_sm <- EC50_mort_df_sm %>% 
+                      separate(Phylum, "Phylum", sep = " ") %>% 
+                      mutate_all(na_if, "") %>% 
+                      rename(Species = Test.organisms..species.)
+
+EC50_mort_df_sm_X <- merge(EC50_mort_df_sm, Phylum_view, by = "Species", incomparables = TRUE, all = TRUE)
+  
+EC50_mort_df_sm_X <- EC50_mort_df_sm_X %>% 
+                      mutate(phyla_merge = coalesce(Phylum.x, phylum))
+
+EC50_Phyla <- EC50_mort_df_sm_X %>% 
+              rename(Phylum = phyla_merge) %>% 
+              select(c(2,3:8,34,1,13:27)) #%>% 
+              #left_join(., HESTIA_CIR_data, by= "CAS.number") #this is an additional "safety" insert of the CIR-data, since i've lost that data several times...
+}   #CREATE THE FINAL EC50_PHYLA LIST WITH ALL PHYLUM-INFORMATION FOR ORGANISMS           
+```
+
+
+
+#AvLogEC50 for Vertebrates
+
+```{r}
+EC50_mort_vert <- subset(EC50_Phyla, Phylum == "Chordata") # creating one dataset for VERTEBRATES
+
+#       Time to look through the actual tox data for freshwater species!
+#       Data is filtered to remove saltwater and empty habitat descriptions. Included are "Freshwater", "Brackish", "Amphibians" & "Diadromous"
+
+EC50_mort_vert <- EC50_mort_vert %>% 
+                  filter(Value.Unit == "mg/L", # <- filtering out all measurement units NOT mg/L
+                         Water.type_curated != "Saltwater",
+                         Water.type_curated != ""
+                         )
+
+#       The following calculations are done AFTER Acute to Chronic ("ACR") converisons!
+
+EC50_vert_medians <- EC50_mort_vert %>% # Getting the medians and "n-replicates" for each substance 
+                    mutate(LOG10_EC50 = log10(Acute.to.Chronic)) %>% 
+                    group_by(CAS.number, Endpoint, AcuteChronic, Value.Unit) %>% 
+                    summarise(EC50_mean = mean(Acute.to.Chronic, na.rm = TRUE), #Using Chronic values. mix of ACR converted and chronic values.
+                              LOG10_EC50_mean = mean(LOG10_EC50, na.rm = TRUE),
+                              EC50_median = median(Acute.to.Chronic, na.rm = TRUE),
+                            # min = min(Acute.to.Chronic, na.rm = TRUE),    #Unneccesary. Creates a messy dataset.
+                            # max = max(Acute.to.Chronic, na.rm = TRUE),    #Unneccesary. Creates a messy dataset.
+                            # sd.EC50 = sd(Acute.to.Chronic, na.rm = TRUE), #Unneccesary. Creates a messy dataset.
+                              n_data_points=n(), 
+                            # SE_EC50 = sd.EC50/sqrt(n_data_points),        #Unneccesary. Creates a messy dataset.
+                              time_days_min = min(Time.Hours, na.rm = TRUE), 
+                              time_days_max = max(Time.Hours, na.rm = TRUE)
+                              ) %>% 
+                    rename(LOG10_EC50_mean_chronic = LOG10_EC50_mean) %>% 
+                    mutate(Value.Unit = "mg/L") %>% 
+                    mutate(Phyla_class = "Vertebrates")#%>% ##WHEN I HAVE THE CIR_LOG-KOW DATA, RUN THIS AGAIN. I LEAVE IT FOR NOW.
+                    #mutate(Kow.L.L = 10^CIR_Log_Kow)
+                             
+write_excel_csv(EC50_vert_medians, "EC50_vertebrates_median_2022-03-04.csv", delim = ",", na = "NA") #PLEASE CHANGE DATES WHEN MAKING ANY CHANGES!
+
+```
+
+
+#AvLogEC50 for non-vertebrates
+
+```{r}
+EC50_mort_invert <- subset(EC50_Phyla, Phylum != c("Chordata", 
+                                                   "Streptophyta", 
+                                                   "Ciliophora", 
+                                                   "Chlorophyta", 
+                                                   "Bacillariophyta")
+                          ) # creating one dataset for invertebrates
+
+#       Time to look through the actual tox data for freshwater species!
+#       Data is filtered to remove salt water and empty habitat descriptions. Included are "Freshwater", "Brackish", "Amphibians" & "Diadromous"
+Invertebrate_types <-  as.data.frame(EC50_mort_invert %>% 
+                                       count(Phylum)) #object to see which phyla are included in the df
+
+EC50_mort_invert <- EC50_mort_invert %>% 
+                  filter(Value.Unit == "mg/L", # <- filtering out all measurement units NOT mg/L
+                         Water.type_curated != "Saltwater",
+                         Water.type_curated != ""
+                         )%>% 
+                    mutate(AcuteChronic = case_when(Time.Hours < 168 ~ "Acute"
+                                                    ,Time.Hours >= 504 ~ "Chronic"
+                                                    ,TRUE ~ "sub-Chronic" 
+                                                    )
+                                                  )%>% 
+                    mutate(Acute.to.Chronic = case_when(AcuteChronic == "Acute" ~ Value.MeanValue/2,
+                                                        TRUE ~ as.numeric(Value.MeanValue)) # <- Applying the USEtox acute to chronic (ACR) ratio
+                           )
+
+#       The following calculations are done AFTER Acute to Chronic ("ACR") converisons!
+
+EC50_invert_medians <- EC50_mort_invert %>% # Getting the medians and "n-replicates" for each substance 
+                    mutate(LOG10_EC50 = log10(Acute.to.Chronic)) %>% 
+                    group_by(CAS.number, Endpoint, AcuteChronic, Value.Unit) %>% 
+                    summarise(EC50_mean = mean(Acute.to.Chronic, na.rm = TRUE), #Using Chronic values. mix of ACR coninverted and chronic values.
+                              LOG10_EC50_mean = mean(LOG10_EC50, na.rm = TRUE),
+                              EC50_median = median(Acute.to.Chronic, na.rm = TRUE),
+                            # min = min(Acute.to.Chronic, na.rm = TRUE),    #Unneccesary. Creates a messy dataset.
+                            # max = max(Acute.to.Chronic, na.rm = TRUE),    #Unneccesary. Creates a messy dataset.
+                            # sd.EC50 = sd(Acute.to.Chronic, na.rm = TRUE), #Unneccesary. Creates a messy dataset.
+                              n_data_points=n(), 
+                            # SE_EC50 = sd.EC50/sqrt(n_data_points),        #Unneccesary. Creates a messy dataset.
+                              time_days_min = min(Time.Hours, na.rm = TRUE), 
+                              time_days_max = max(Time.Hours, na.rm = TRUE)
+                              ) %>% 
+                    mutate(Value.Unit = "mg/L") %>%
+                    rename(LOG10_EC50_mean_chronic = LOG10_EC50_mean) %>% 
+                    mutate(Phyla_class = "Invertebrates")
+                    #mutate(Kow.L.L = 10^CIR_Log_Kow)
+                             
+#write_excel_csv(EC50_invert_medians, "EC50_invertebrates_median_2022-03-04.csv", delim = ",", na = "NA")
+
+```
+
+#AvLogEC50 for algae & plants
+
+```{r}
+EC50_mort_plant <- subset(EC50_Phyla, Phylum == c("Streptophyta", 
+                                                  "Ciliophora", 
+                                                  "Chlorophyta", 
+                                                  "Bacillariophyta")) # creating one dataset for "the rest - Algae & Plants"
+
+
+EC50_mort_plant <- EC50_mort_plant %>% 
+                  filter(Value.Unit == "mg/L", # <- filtering out all measurement units NOT mg/L
+                         Water.type_curated != "Saltwater",
+                         Water.type_curated != ""
+                         )%>% 
+                    mutate(AcuteChronic = case_when(Time.Hours < 168 ~ "Acute"
+                                                    ,Time.Hours >= 168 ~ "Chronic"
+                                                    )
+                                                  )%>% 
+                    mutate(Acute.to.Chronic = case_when(AcuteChronic == "Acute" ~ Value.MeanValue/2,
+                                                        TRUE ~ as.numeric(Value.MeanValue)) # <- Applying the USEtox acute to chronic (ACR) ratio
+                           )
+
+#       The following calculations are done AFTER Acute to Chronic ("ACR") converisons!
+
+EC50_plant_medians <- EC50_mort_plant %>% # Getting the medians and "n-replicates" for each substance 
+                    mutate(LOG10_EC50 = log10(Acute.to.Chronic)) %>% 
+                    group_by(CAS.number, Endpoint, AcuteChronic, Value.Unit) %>% 
+                    summarise(EC50_mean = mean(Acute.to.Chronic, na.rm = TRUE), #Using Chronic values. mix of ACR coninverted and chronic values.
+                              LOG10_EC50_mean = mean(LOG10_EC50, na.rm = TRUE),
+                              EC50_median = median(Acute.to.Chronic, na.rm = TRUE),
+                            # min = min(Acute.to.Chronic, na.rm = TRUE),    #Unneccesary. Creates a messy dataset.
+                            # max = max(Acute.to.Chronic, na.rm = TRUE),    #Unneccesary. Creates a messy dataset.
+                            # sd.EC50 = sd(Acute.to.Chronic, na.rm = TRUE), #Unneccesary. Creates a messy dataset.
+                              n_data_points=n(), 
+                            # SE_EC50 = sd.EC50/sqrt(n_data_points),        #Unneccesary. Creates a messy dataset.
+                              time_days_min = min(Time.Hours, na.rm = TRUE), 
+                              time_days_max = max(Time.Hours, na.rm = TRUE)
+                              ) %>% 
+                    mutate(Value.Unit = "mg/L") %>%
+                    rename(LOG10_EC50_mean_chronic = LOG10_EC50_mean) %>% 
+                    mutate(Phyla_class = "Plant_algae")
+                    #mutate(Kow.L.L = 10^CIR_Log_Kow)
+                             
+#write_excel_csv(EC50_plant_medians, "EC50_plant_median_2022-03-04.csv", delim = ",", na = "NA")
+
+```
+
+
+#Dataset inventory 
+
+counts of variables
+Overview of counts for different phylogenetic categorizations
+
+```{r}
+{
+kingdoms          <- as.data.frame(unique(all_data$Kingdom))
+
+Vertebrates_view  <- as.data.frame(EC50_mort_vert %>% 
+                                  count(Test.organisms..species.)
+                                  )
+Invertebrates_view  <- as.data.frame(EC50_mort_invert %>% 
+                                  count(Test.organisms..species., Phylum, Subphylum) %>% 
+                                    filter(Subphylum == "")
+                                  )
+
+Subphylum_view    <- as.data.frame(EC50_mort_df_sm %>% 
+                                  count(Subphylum)
+                                  )
+
+Phylum_view <- as.data.frame(EC50_mort_df_sm %>% 
+                                  count(Phylum)
+                                  )
+
+units_view <- as.data.frame(EC50_mort_df_sm %>% 
+                                  count(Value.Unit)
+                                  )
+freshwater_view <- as.data.frame(EC50_mort_df %>% 
+                                  count(Water.type)
+                                  )
+
+} # getting an overview of the count of species/phylun/unit types in various columns
+
+```
+
+
+#HESTIA<->USETox DATA COMPARISON
+
+After the data cleaning step to calculate I feel like i need to do a check for how many pesticides already have been characterized in USEtox before proceeding.
+
+```{r}
+USEtox_CAS <- readxl::read_xlsx("CAS.number_USEtox.xlsx")
+
+USEtox_CAS$CAS.number_USEtox = as.factor(USEtox_CAS$CAS.number_USEtox)
+
+str(USEtox_CAS)
+
+x <- as.data.frame(unique(EC50_mort_df_sm$CAS.number))
+z <-  EC50_mort_df_sm[EC50_mort_df_sm$CAS.number %in% USEtox_CAS$CAS.number_USEtox,]
+y <- as.data.frame(unique(z$CAS.number))
+count_already_in_USEtox = nrow(y)
+
+```
+
+
+# Chemical Properties
+
+#Vapor pressure (Pvap)
+För att samla data på Vapor Pressure, där tabellen har filtrerat bort substanser utan data. Därefter normaliserat (tagit means av substanser som har >1 värde rapporterat) 
+```{r}
+p_vap <- read.csv("QSAR toolbox-data\\vapour pressure.csv", header = T, sep = "\t", fileEncoding="UTF-16LE", stringsAsFactors=FALSE)  
+   
+p_vap$Value.MeanValue_Hg = as.numeric(p_vap$Value.MeanValue_Hg)
+
+p_vap_small <- p_vap %>% 
+              select(CAS.Number, Value.MeanValue_Hg, Value.Unit.Pa., Prediction.approach) %>% 
+              mutate(val_mean_Pa = (Value.MeanValue_Hg*133.322)) %>% 
+              filter(val_mean_Pa != "", 
+                     val_mean_Pa != 0) %>% 
+              rename(CAS.number = CAS.Number)
+
+p_vap <- p_vap_small %>%   # försöker lägga in value unit och prediction approach!!
+              group_by(CAS.number) %>% 
+              summarise(n_entries_p_vap = n(),
+                        mean_p_vap = mean(val_mean_Pa, na.rm=T),
+                        Unit.Pa. = unique(Value.Unit.Pa.),
+                        Prediction.approach = unique(Prediction.approach))
+
+rm(p_vap_small)
+
+```
+
+#Octanol-Water partitioning (QSAR_Kow)
+Octanol-Water partitioning (Kow) only need to filter out substances lacking data points. Thereafter conversion of LogP -> L.L-1 (USEtox-input). This is 10^LogP.
+
+```{r}
+Kow <- read.csv("QSAR toolbox-data\\KoW octanol-water.csv", header = T, sep = "\t", fileEncoding="UTF-16LE", stringsAsFactors=FALSE)  
+       #Kow$Value.MeanValue = as.numeric(Kow$Value.MeanValue)
+Kow <- Kow %>% 
+              select(CAS.Number, Value.MeanValue, Database) %>% 
+              mutate(QSAR_log.Value.L.L = (10^Value.MeanValue)) %>% 
+              filter(Value.MeanValue != "", 
+                     Value.MeanValue != 0) %>% 
+              rename(QSAR_Kow = Value.MeanValue,
+                     CAS.number = CAS.Number,
+                     Database_Kow = Database)
+```
+
+#SOLUBILITY (SOL)
+Solubility är endast filtrerad efter substanser med data tillgänglig
+```{r}
+Sol <- read.csv("QSAR toolbox-data\\Solubility.csv", header = T, sep = ";", stringsAsFactors=FALSE)  
+
+Sol$Value.MeanValue = as.numeric(Sol$Value.MeanValue)
+
+Sol <- Sol %>% 
+              select(CAS.Number, Value.MeanValue, Value.Unit, Database) %>% 
+              rename(solubility = Value.MeanValue, 
+                     CAS.number = CAS.Number,
+                     solubility_unit = Value.Unit,
+                     solubility_db = Database
+                     )
+               
+```
+
+
+# Degradation rates (Kdeg)
+Degradation rates Needs to be converted from BIOWIN3-output (Continuous deg, time) to discrete time (days, days-week, ...) to USEtox (1/s).
+Thereafter filter for available data.
+
+#Deg Water (KdegW)
+```{r}
+KdegW <- read.csv("QSAR toolbox-data\\Episuite BioWin3 biodegradation water ultimate half-life.csv", header = T, sep = "\t", fileEncoding="UTF-16LE", stringsAsFactors=FALSE)  
+
+KdegW$Value.MeanValue = as.numeric(KdegW$Value.MeanValue)
+  
+KdegW_small <- KdegW %>% 
+                select(CAS.Number, Endpoint, Value.MeanValue, SAR..Q.SAR, Prediction.approach) %>% 
+                rename(KdegW_biowin3 = Value.MeanValue,
+                       CAS.number = CAS.Number) %>% 
+                filter(KdegW_biowin3 != "NA")
+
+KdegW <- KdegW_small %>% 
+              mutate(
+                      Biowin3_output =case_when(
+                KdegW_biowin3 >= 4.75 & KdegW_biowin3 <= 5 ~ "Hours",
+                KdegW_biowin3 >= 4.25 & KdegW_biowin3 <= 4.75 ~ "Hours-Days",
+                KdegW_biowin3 >= 3.75 & KdegW_biowin3 <= 4.25 ~ "Days",
+                KdegW_biowin3 >= 3.25 & KdegW_biowin3 <= 3.75 ~ "Days-Weeks",
+                KdegW_biowin3 >= 2.75 & KdegW_biowin3 <= 3.25 ~ "Weeks",
+                KdegW_biowin3 >= 2.25 & KdegW_biowin3 <= 2.75 ~ "Weeks-Months",
+                KdegW_biowin3 >= 1.75 & KdegW_biowin3 <= 2.25 ~ "Months",
+                KdegW_biowin3 <= 1.75  ~ "Recalcitrant"
+                              ),
+                      Biodegradation_rates_1s_KdegW =case_when(
+                Biowin3_output == "Hours" ~ 4.7E-5,
+                Biowin3_output == "Hours-Days" ~ 6.4E-6,
+                Biowin3_output == "Days" ~ 3.4E-6,
+                Biowin3_output == "Days-Weeks" ~ 9.3E-7,
+                Biowin3_output == "Weeks" ~ 5.3E-7,
+                Biowin3_output == "Weeks-Months" ~ 2.1E-7,
+                Biowin3_output == "Months" ~ 1.3E-7,
+                Biowin3_output == "Recalcitrant" ~ 4.5E-8
+                )
+                      )
+rm(KdegW_small)
+
+```
+
+#Deg Soil (KdegSL)
+
+```{r}
+KdegSL <- read.csv("QSAR toolbox-data\\Episuite BioWin3 biodegradation soil half-life.csv", header = T, sep = "\t", fileEncoding="UTF-16LE", stringsAsFactors=FALSE)  
+
+KdegSL$Value.MeanValue = as.numeric(KdegSL$Value.MeanValue)
+
+   KdegSL <- KdegSL %>% 
+                rename(CAS.number = CAS.Number) %>% 
+                select(CAS.number, EndpointPath, Value.MeanValue) %>% 
+                mutate(KdegSL_biowin3 = Value.MeanValue) %>% 
+                filter(KdegSL_biowin3 != "NA") %>% 
+   
+                mutate(
+                      Biowin3_output =case_when(
+                  KdegSL_biowin3 >= 4.75  ~ "Hours",
+                  KdegSL_biowin3 >= 4.25 & KdegSL_biowin3 <= 4.75 ~ "Hours-Days",
+                  KdegSL_biowin3 >= 3.75 & KdegSL_biowin3 <= 4.25 ~ "Days",
+                  KdegSL_biowin3 >= 3.25 & KdegSL_biowin3 <= 3.75 ~ "Days-Weeks",
+                  KdegSL_biowin3 >= 2.75 & KdegSL_biowin3 <= 3.25 ~ "Weeks",
+                  KdegSL_biowin3 >= 2.25 & KdegSL_biowin3 <= 2.75 ~ "Weeks-Months",
+                  KdegSL_biowin3 >= 1.75 & KdegSL_biowin3 <= 2.25 ~ "Months",
+                  KdegSL_biowin3 <= 1.75  ~ "Recalcitrant"
+                              ),
+                      Biodegradation_rates_1s_KdegSL =case_when(
+                  Biowin3_output == "Hours" ~ 4.7E-5,
+                  Biowin3_output == "Hours-Days" ~ 6.4E-6,
+                  Biowin3_output == "Days" ~ 3.4E-6,
+                  Biowin3_output == "Days-Weeks" ~ 9.3E-7,
+                  Biowin3_output == "Weeks" ~ 5.3E-7,
+                  Biowin3_output == "Weeks-Months" ~ 2.1E-7,
+                  Biowin3_output == "Months" ~ 1.3E-7,
+                  Biowin3_output == "Recalcitrant" ~ 4.5E-8
+                  )
+                      )
+   
+   
+```
+
+#Deg Sediment (KdegSD; not available)
+- No values available from QSAR Toolbox (yet?)
+```{r}
+KdegSD <- read.csv("QSAR toolbox-data\\Episuite BioWin3 biodegradation sediment half-life.csv", header = T, sep = "\t", fileEncoding="UTF-16LE", stringsAsFactors=FALSE)  
+
+KdegSD$Value.MeanValue = as.numeric(KdegSD$Value.MeanValue)
+  
+
+```
+
+#Deg Air (KdegA; not available)
+- No values available from QSAR Toolbox (yet?)
+
+```{r}
+#to be generated?
+```
+
+#Bioaccumulation Factor (BAF)
+
+```{r}
+QSAR_2D <- read.csv("QSAR toolbox-data\\QSAR_BAF_2022-03-08.csv", header = T, sep = ";")
+QSAR_2D_DF <- QSAR_2D %>% 
+                    select(c(2:15)) %>%
+                    rename(smiles_col = 'SMILES',
+                           CAS.number = CAS.Number) %>% 
+                    filter(smiles_col != "") 
+                    
+
+BAF <- left_join(HESTIA_CIR_data, QSAR_2D_DF, by = "CAS.number") %>% 
+          select(CAS.number, BAF_L.kg.1) %>% 
+          distinct(CAS.number, .keep_all=TRUE)
+        
+```
+
+
+# SUMMARY - Merge all data 
+Produce a coherent data set. Still need to calculate and attribute avlog_HC50 values to each CAS.number
+IMPORTANT NOTE, I JOIN BY AVAILABLE TOX-DATA. THERE MIGHT BE AVAILABLE CHEM_PROPERTIES THAT ARE FILTERED OUT
+
+
+```{r}
+Summary <-  rbind(EC50_vert_medians, EC50_invert_medians, EC50_plant_medians) %>% 
+                  rename(Original_EC50_data = AcuteChronic) %>% 
+                  select(c(1,2,11,6,5,4,8,3)) %>% 
+                  mutate(Phyla_class = as.factor(Phyla_class))
+
+Summary_HC50 <- Summary %>% 
+                   select(-Phyla_class) %>% 
+                   group_by(CAS.number, Endpoint) %>% 
+                   summarise(LOG10_HC50 = mean(LOG10_EC50_mean_chronic, na.rm = TRUE),
+                              n_data_points_HC50 = n()                              ) 
+
+df <- mol_w_tot %>% 
+                select(CAS.number, term.name) 
+
+Summary_NEW <-  left_join(Summary_HC50, 
+                          HESTIA_CIR_data, 
+                          by = "CAS.number") %>% 
+                left_join(., 
+                          p_vap, 
+                          by.x = "CAS.number") %>%
+                left_join(., 
+                          Kow, 
+                          by = "CAS.number") %>%
+                select(-c(Prediction.approach, 
+                          Unit.Pa.)) %>% 
+                left_join(., 
+                          Sol, 
+                          by = "CAS.number") %>%       
+                left_join(., 
+                          KdegW, 
+                          by = "CAS.number") %>% 
+                left_join(., 
+                          BAF, 
+                          by = "CAS.number") %>% 
+                select(-c(Endpoint.y, 
+                          SAR..Q.SAR)) %>% 
+                rename(Prediction.approach_Kow = Prediction.approach,
+                      Biowin3_output_KdegW = Biowin3_output) %>% 
+                left_join(., 
+                          KdegSL, 
+                          by = "CAS.number") %>% 
+                rename(Biowin3_output_KdegSL = Biowin3_output) %>% 
+                select(-EndpointPath) %>% 
+                left_join(., 
+                          df, 
+                          by = "CAS.number") %>%
+                rename(Endpoint = Endpoint.x) %>% 
+                mutate(USEtox_recommend = case_when(n_data_points_HC50 >= 3 ~ "Recommended",
+                                                    TRUE ~ "")) %>% 
+                distinct() %>% 
+                select(c(1,23,3,2,23,4:22))  
+                
+write.csv(Summary_NEW, "HESTIA_EC50_Summary_NEW_2022-03-07.csv") 
+
+```
+
+```{r}
+
+Summary_NEW <- Summary_NEW %>% 
+                    #mutate(CIR_Kow_L.L = (10^CIR_Log_Kow)) %>% 
+                    select(c(1:12, 24:25, 13:23))
+
+```
+
+# 2022-03-18 Expansion of the dataset
+Found a possibility to fill in blanks on toxicity and pesticide category for 1067 chemicals data from US EPA database that i have downloaded 2021-06-18 (R-code and data-folder).
+Additionally, i have found the Enviro-tox database. A curated toxicity database with all relevant toxicological information 4128 organic chemicals (80912 tox data points).
+
+#2022-03-21 Novel QSAR_toolbox_data with ALL effects and EC50/LOEC/NOEC-endpoints
+
+```{r}
+
+QSAR_TOX <- read.csv("QSAR toolbox-data\\2022-03-08_NEW_EC50\\QSAR_Aquatic_ALL_TOX_2022-03-21.csv", header = T, sep = "\t", fileEncoding="UTF-16LE", stringsAsFactors=FALSE, na.string = "")
+
+QSAR_ls <-  QSAR_TOX %>% 
+                  select(c(2:9))
+
+QSAR_ls <- QSAR_ls %>% 
+                na_if("No value") %>%  
+                separate(BAF, "BAF(log L/kg)", sep = " ", convert = TRUE)  
+
+QSAR_ls <- QSAR_ls %>% 
+                filter(!is.na(`BAF(log L/kg)`))
+
+QSAR_lx <-  QSAR_TOX %>% 
+                  select(-c(1, 3:9))
+
+
+QSAR_TOX <- QSAR_lx %>% 
+              left_join(QSAR_ls, by= "CAS.Number") %>% 
+              distinct() %>% 
+              select(c(1,39:45,2:38))
+
+QSAR_more <- QSAR_TOX %>% 
+            mutate(Phylum = case_when(is.na(Phylum) ~ Division
+                                      , TRUE ~ Phylum
+                                      ),
+                   Class = case_when(is.na(Class) ~ Superclass
+                                     , TRUE ~ Class
+                                     )
+                   )
+
+QSAR_less <- QSAR_more %>% 
+              filter(is.na(Phylum)) 
+
+
+#longlist <- classification(get_uid(QSAR_less$Test.organisms..species., rank_query = 'genus', rows = 1, verbose =TRUE, , key = "90cf5bb525c0eb52c673fa933280b7248708"), , key = "90cf5bb525c0eb52c673fa933280b7248708")
+
+                           
+```
+
