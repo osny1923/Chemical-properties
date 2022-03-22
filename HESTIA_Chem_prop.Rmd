@@ -702,6 +702,7 @@ Summary_NEW <- Summary_NEW %>%
 Found a possibility to fill in blanks on toxicity and pesticide category for 1067 chemicals data from US EPA database that i have downloaded 2021-06-18 (R-code and data-folder).
 Additionally, i have found the Enviro-tox database. A curated toxicity database with all relevant toxicological information 4128 organic chemicals (80912 tox data points).
 
+
 #2022-03-21 Novel QSAR_toolbox_data with ALL effects and EC50/LOEC/NOEC-endpoints
 
 ```{r, echo=FALSE}
@@ -778,22 +779,24 @@ QSAR_EC50 <- QSAR_merge %>%
                        Value.MeanValue, Value.Unit,  # Ecotoxicological data
                        'BAF(log L/kg)':BAF..upper.trophic., # Physicochemical parameters
                        )) %>% 
-              filter(Species != c("Aquatic Community", "Animalia", "Wild", "Unspecified")
-                     )#need to remove the bad species definitions
+              filter(Species != c("Aquatic Community", "Animalia", "Wild", "Unspecified") #need to remove the bad species definitions
+                     )  %>% 
+                  rm(QSAR_merge)
                      
 ```
 
 
 #Cleaning up in the species-genus-phyla definitions
 ```{r}
-
-QSAR_Phyla_view <- QSAR_EC50 %>% 
+{
+QSAR_Phyla_view2 <- QSAR_EC50_2 %>% 
                       count(Phylum)
-QSAR_Phyla_fix <- QSAR_EC50 %>% 
+QSAR_Phyla_fix <- QSAR_EC50_2 %>% 
                       filter(is.na(Phylum))
 
 QSAR_Genus_viev <- QSAR_Phyla_fix %>% 
                       count(Genus)
+
 genuslist<- classification(get_uid(QSAR_Genus_viev$Genus, rank_query = 'genus', rows = 1)) 
 genuslist_ <- rbind(genuslist)
 df1 <- genuslist_ %>% 
@@ -802,14 +805,174 @@ df2 <- genuslist_ %>%
             filter(rank == "phylum")
 new_genus <- df1 %>% 
               left_join(df2, by = "query") %>% 
-                      rename(Genus = name.y, phylum = name.x) %>% 
+                      rename(Genus = name.x, phylum = name.y) %>% 
                       select(c(4,5,1)) %>% 
                       filter(!is.na(Genus))
 
 view(new_genus)
 #bara kvar att få in dessa beskrivna genus i QSAR_EC50!!
+QSAR_EC50_2 <- merge(QSAR_EC50_2, QSAR_Genus_viev_2, by = "Genus", incomparables = TRUE, all = TRUE) %>% 
+                  mutate(phyla_merge = coalesce(Phylum, phylum)) %>% 
+                    select(c(2:5, 1, 23, 7:20)) %>% 
+                      rename(Phylum = phyla_merge)
+  
+QSAR_Genus_viev %>% 
+  write.csv("QSAR_genus_curate.csv", col.names = TRUE, sep = ",")
+QSAR_Genus_viev_2 <- read.csv("QSAR_genus_curate_ut.csv", sep = ";") %>% 
+                          rename(phylum = Phylum)
+} # this code has been run several times with manual annotations to the exported .csv document. It's a mess. 
+
 
 # Sen är det frågan hur man gör med "freshwater/saltwater".
+Water_list <- EC50_mort_df_sm %>% 
+                select(Species, Water.type_curated) %>% 
+                distinct(Species, .keep_all = TRUE)
+QSAR_EC50_2 <- QSAR_EC50_2 %>% 
+            left_join(Water_list, by = "Species")
+
+QSAR_Phyla_w <- QSAR_EC50_2 %>% 
+                      filter(is.na(Water.type_curated)) %>% 
+                      count(Species)
+
+
+```
+
+```{r}
+QSAR_EC50_2 <- QSAR_EC50_2 %>% 
+                         mutate(Duration.MeanValue = as.numeric(gsub(',', '.', Duration.MeanValue)),
+                                Value.MeanValue = as.numeric(gsub(',', '.', Value.MeanValue)),
+                                `BAF(log L/kg)` = as.numeric(gsub(',', '.', `BAF(log L/kg)`)),
+                                X.Q..Basic.pKa..Chemaxon. = as.numeric(gsub(',', '.', X.Q..Basic.pKa..Chemaxon.))
+                                ) 
+
+QSAR_EC50_2 <- QSAR_EC50_2 %>% 
+                mutate(USEtox_category = case_when(Phylum == "Acanthocephala" ~ "Invertebrate",
+                                                   Phylum == "Actinobacteria" ~ "Bacteria",  
+                                                   Phylum == "Algae" ~ "Algae",  
+                                                   Phylum ==  "Annelida" ~ "Invertebrate",  
+                                                   Phylum ==          "Arthropoda" ~ "Invertebrate",  
+                                                   Phylum ==          "Ascomycota" ~ "Fungi",  
+                                                   Phylum ==          "Bacillariophyta" ~ "Algae",  
+                                                   Phylum ==         "Basidiomycota" ~ "Fungi",  
+                                                   Phylum ==         "Bryozoa" ~ "Invertebrate",  
+                                                   Phylum ==         "Chlorophyta" ~ "Algae",  
+                                                   Phylum ==         "Chordata" ~ "Vertebrate",  
+                                                   Phylum ==         "Chytridiomycota" ~ "Fungi",  
+                                                   Phylum ==         "Ciliophora" ~ "Algae",  
+                                                   Phylum ==         "Cnidaria" ~ "Invertebrate",  
+                                                   Phylum ==         "Cyanobacteria" ~ "Bacteria",  
+                                                   Phylum ==         "Discosea" ~ "Amoebozoa",  
+                                                   Phylum ==         "Echinodermata" ~ "Invertebrate",  
+                                                   Phylum ==         "Euglenophycota" ~ "Algae",  
+                                                   Phylum ==         "Euglenozoa" ~ "Algae",  
+                                                   Phylum ==         "Firmicutes" ~ "Bacteria",  
+                                                   Phylum ==         "Foraminifera" ~ "Algae",  
+                                                   Phylum ==         "Gastrotricha" ~ "Invertebrate",  
+                                                   Phylum ==         "Invertebrates" ~ "Invertebrate",  
+                                                   Phylum ==         "Mollusca" ~ "Invertebrate",  
+                                                   Phylum ==         "Streptophyta" ~ "Plantae",  
+                                                   Phylum ==         "Rotifera" ~ "Algae",  
+                                                   Phylum ==         "Platyhelminthes" ~ "Invertebrate",  
+                                                   Phylum ==         "Plantae" ~ "Plantae",  
+                                                   Phylum ==         "Vertebrate" ~ "Vertebrate",  
+                                                   Phylum ==         "Nematoda" ~ "Invertebrate",  
+                                                   Phylum ==         "Haptophyta" ~ "Algae",  
+                                                   Phylum ==         "Rhodophyta" ~ "Algae",  
+                                                   Phylum ==        "Proteobacteria" ~ "Bacteria",  
+                                                            
+                                                    TRUE ~ "")
+                       )
+
+
+```
+
+# Time to convert numbers into USEtox formatting, time and EC50 values
+
+
+Here I filter to get: 
+1. Translatable time units across
+2. Remove data points with no tox data available
+3. Test-duration is set as "NA"
+   Then i mutate the measurable time units to a comparable unit (hours)
+   Thereafter i subject the toxicity units to a filter:
+1. All possible conversions to mg/L  (ppm & ppb)
+2. Filter out all other toxicity units (%, g/kg / ng/egg etc.)
+   Then i have all values as mg/L i check for acute or chronic 
+1. Convert all acute toxicity data to chronic values according to USEtox ACR (chronic = acute/2)
+ 
+```{r}
+
+Q_dat <- QSAR_EC50_2 %>% 
+                    filter(Duration.Unit %in% c("min", "h", "d", "wk", "mo", "yr"), 
+                           Value.MeanValue != "NA",
+                           Duration.MeanValue != "NA") %>% 
+                    mutate(Time.Hours = case_when(Duration.Unit == "min" ~ Duration.MeanValue/60,
+                                                  Duration.Unit == "h" ~ Duration.MeanValue*1,
+                                                  Duration.Unit == "d" ~ Duration.MeanValue*24,
+                                                  Duration.Unit == "wk" ~ Duration.MeanValue*(24*7),
+                                                  Duration.Unit == "mo" ~ Duration.MeanValue*(24*30),
+                                                  Duration.Unit == "yr" ~ Duration.MeanValue*(24*365)),
+                          Value.Unit = as.factor(case_when(Value.Unit == "ppm" ~ "mg/L",
+                                                  TRUE ~ as.character(Value.Unit)
+                                                            )
+                                                  ), 
+                          Value.MeanValue = case_when(Value.Unit == "ppb" ~ Value.MeanValue*1000,
+                                                  TRUE ~ as.numeric(Value.MeanValue)
+                                                      ),
+                          Value.Unit = case_when(Value.Unit == "ppb" ~ "mg/L",
+                                                  TRUE ~ as.character(Value.Unit)
+                                                  ),
+                          
+                          #I should probably assign the Acute/chronic value when i have sorted the species!
+                          
+                          AcuteChronic = as.factor(case_when(Time.Hours <= 168 ~ "Acute"
+                                                    ,Time.Hours >= 768 ~ "Chronic"
+                                                    ,TRUE ~ "sub-Chronic" 
+                                                             )
+                                                    ),
+                          Acute.to.Chronic = case_when(AcuteChronic == "Acute" ~ Value.MeanValue/2,
+                                                        TRUE ~ as.numeric(Value.MeanValue)) # <- Applying the USEtox acute to chronic (ACR) ratio
+                           )
+
+```
+
+
+```{r}
+
+EC50_mort_vert <- subset(EC50_Phyla, Phylum == "Chordata") # creating one dataset for VERTEBRATES
+
+#       Time to look through the actual tox data for freshwater species!
+#       Data is filtered to remove saltwater and empty habitat descriptions. Included are "Freshwater", "Brackish", "Amphibians" & "Diadromous"
+
+EC50_mort_vert <- EC50_mort_vert %>% 
+                  filter(Value.Unit == "mg/L", # <- filtering out all measurement units NOT mg/L
+                         Water.type_curated != "Saltwater",
+                         Water.type_curated != ""
+                         )
+
+#       The following calculations are done AFTER Acute to Chronic ("ACR") converisons!
+
+EC50_vert_medians <- EC50_mort_vert %>% # Getting the medians and "n-replicates" for each substance 
+                    mutate(LOG10_EC50 = log10(Acute.to.Chronic)) %>% 
+                    group_by(CAS.number, Endpoint, AcuteChronic, Value.Unit) %>% 
+                    summarise(EC50_mean = mean(Acute.to.Chronic, na.rm = TRUE), #Using Chronic values. mix of ACR converted and chronic values.
+                              LOG10_EC50_mean = mean(LOG10_EC50, na.rm = TRUE),
+                              EC50_median = median(Acute.to.Chronic, na.rm = TRUE),
+                            # min = min(Acute.to.Chronic, na.rm = TRUE),    #Unneccesary. Creates a messy dataset.
+                            # max = max(Acute.to.Chronic, na.rm = TRUE),    #Unneccesary. Creates a messy dataset.
+                            # sd.EC50 = sd(Acute.to.Chronic, na.rm = TRUE), #Unneccesary. Creates a messy dataset.
+                              n_data_points=n(), 
+                            # SE_EC50 = sd.EC50/sqrt(n_data_points),        #Unneccesary. Creates a messy dataset.
+                              time_days_min = min(Time.Hours, na.rm = TRUE), 
+                              time_days_max = max(Time.Hours, na.rm = TRUE)
+                              ) %>% 
+                    rename(LOG10_EC50_mean_chronic = LOG10_EC50_mean) %>% 
+                    mutate(Value.Unit = "mg/L") %>% 
+                    mutate(Phyla_class = "Vertebrates")#%>% ##WHEN I HAVE THE CIR_LOG-KOW DATA, RUN THIS AGAIN. I LEAVE IT FOR NOW.
+                    #mutate(Kow.L.L = 10^CIR_Log_Kow)
+                             
+write_excel_csv(EC50_vert_medians, "EC50_vertebrates_median_2022-03-04.csv", delim = ",", na = "NA") #PLEASE CHANGE DATES WHEN MAKING ANY CHANGES!
+
 
 
 ```
