@@ -22,6 +22,7 @@ knitr::opts_chunk$set(eval = FALSE, message=FALSE, warning=FALSE)
     library(kableExtra)
     library(webchem)
     library(taxize)
+    library(usethis)
 
 ```
 
@@ -63,7 +64,7 @@ HESTIA_CIR_data <- HESTIA_CIR_data_1 %>%
                     left_join(., HESTIA_CIR_data_3, 
                               by = "CAS.number")
 
-
+write.csv(HESTIA_CIR_data,file = "HESTIA_CIR_data_list_2022-03-22.csv", sep = "," ,col.names = TRUE) #making sure to store the output from the data-grab
 # This chemical informaion will be appended further down in the "Summary" section 
 
 ```
@@ -724,8 +725,9 @@ QSAR_lx <-  QSAR_TOX %>%
 QSAR_TOX <- QSAR_lx %>% 
               left_join(QSAR_ls, by= "CAS.Number") %>% 
               distinct() %>% 
-              separate(Test.organisms..species., "Genus", sep = " ", convert = FALSE) %>% 
-              select(c(1,39:45,2:38))
+              separate(Test.organisms..species., "Genus", sep = " ", remove = FALSE) %>%
+              rename(Species = Test.organisms..species.)
+              #select(c(1,39:45,2:38))
 
 QSAR_more <- QSAR_TOX %>% 
             mutate(Phylum = case_when(is.na(Phylum) ~ Division
@@ -742,34 +744,73 @@ QSAR_less <- QSAR_more %>%
 QSAR_less <- QSAR_less %>% 
                 distinct(Test.organisms..species., keep_all = TRUE) %>% 
                 separate(Test.organisms..species., "Genus", sep = " ", convert = FALSE)
-
-longlist <- classification(get_uid(QSAR_less$Genus, rank_query = 'genus', rows = 1, verbose = TRUE))
+# Longlist to classify species' genus at Phylum level
+#longlist <- classification(get_uid(QSAR_less$Genus, rank_query = 'genus', rows = 1, verbose = TRUE)) 
 
 QSAR_sp <- rbind(longlist) 
+
+#write.csv(QSAR_sp,file = "QSAR_sp_class_list_2022-03-22.csv", sep = "," ,col.names = TRUE) #making sure to store the output from the data-grab
              
 QSAR_sp1 <- QSAR_sp %>%
                       filter(rank == "phylum") 
              
 QSAR_sp2 <- QSAR_sp %>%
                       filter(rank == "genus") 
-                              
-
-
+                            
 QSAR_sp_gen <- QSAR_sp1 %>% 
                       left_join(QSAR_sp2, by = "query") %>% 
                       rename(Genus = name.y, phylum = name.x) %>% 
                       select(c(4,5,1)) %>% 
                       distinct(Genus, .keep_all = TRUE)
 
-
-
 QSAR_merge <- merge(QSAR_TOX, QSAR_sp_gen, by = "Genus", incomparables = TRUE, all = TRUE)
   
 QSAR_merge <- QSAR_merge %>% 
-                      mutate(phyla_merge = coalesce(Phylum, phylum))
+                      mutate(phyla_merge = coalesce(Phylum, phylum)) %>% 
+                      separate(phyla_merge, "Phylum", sep = " ", convert = FALSE)
 
 QSAR_EC50 <- QSAR_merge %>% 
-              select(c(2,3:11,48,1,12:47))
+              select(c(CAS.Number,
+                       3:4, #metadata
+                       5,1,48, # Phylum assignment
+                       8:9, # Endpoint/Effect
+                       14,16:17, # Test duration
+                       Value.MeanValue, Value.Unit,  # Ecotoxicological data
+                       'BAF(log L/kg)':BAF..upper.trophic., # Physicochemical parameters
+                       )) %>% 
+              filter(Species != c("Aquatic Community", "Animalia", "Wild", "Unspecified")
+                     )#need to remove the bad species definitions
+                     
+```
+
+
+#Cleaning up in the species-genus-phyla definitions
+```{r}
+
+QSAR_Phyla_view <- QSAR_EC50 %>% 
+                      count(Phylum)
+QSAR_Phyla_fix <- QSAR_EC50 %>% 
+                      filter(is.na(Phylum))
+
+QSAR_Genus_viev <- QSAR_Phyla_fix %>% 
+                      count(Genus)
+genuslist<- classification(get_uid(QSAR_Genus_viev$Genus, rank_query = 'genus', rows = 1)) 
+genuslist_ <- rbind(genuslist)
+df1 <- genuslist_ %>% 
+            filter(rank == "genus")
+df2 <- genuslist_ %>% 
+            filter(rank == "phylum")
+new_genus <- df1 %>% 
+              left_join(df2, by = "query") %>% 
+                      rename(Genus = name.y, phylum = name.x) %>% 
+                      select(c(4,5,1)) %>% 
+                      filter(!is.na(Genus))
+
+view(new_genus)
+#bara kvar att få in dessa beskrivna genus i QSAR_EC50!!
+
+# Sen är det frågan hur man gör med "freshwater/saltwater".
+
 
 ```
 
