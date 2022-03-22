@@ -703,7 +703,7 @@ Additionally, i have found the Enviro-tox database. A curated toxicity database 
 
 #2022-03-21 Novel QSAR_toolbox_data with ALL effects and EC50/LOEC/NOEC-endpoints
 
-```{r}
+```{r, echo=FALSE}
 
 QSAR_TOX <- read.csv("QSAR toolbox-data\\2022-03-08_NEW_EC50\\QSAR_Aquatic_ALL_TOX_2022-03-21.csv", header = T, sep = "\t", fileEncoding="UTF-16LE", stringsAsFactors=FALSE, na.string = "")
 
@@ -724,6 +724,7 @@ QSAR_lx <-  QSAR_TOX %>%
 QSAR_TOX <- QSAR_lx %>% 
               left_join(QSAR_ls, by= "CAS.Number") %>% 
               distinct() %>% 
+              separate(Test.organisms..species., "Genus", sep = " ", convert = FALSE) %>% 
               select(c(1,39:45,2:38))
 
 QSAR_more <- QSAR_TOX %>% 
@@ -738,10 +739,37 @@ QSAR_more <- QSAR_TOX %>%
 QSAR_less <- QSAR_more %>% 
               filter(is.na(Phylum)) 
 
+QSAR_less <- QSAR_less %>% 
+                distinct(Test.organisms..species., keep_all = TRUE) %>% 
+                separate(Test.organisms..species., "Genus", sep = " ", convert = FALSE)
 
-#longlist <- classification(get_uid(QSAR_less$Test.organisms..species., rank_query = 'genus', rows = 1, verbose =TRUE, , key = "90cf5bb525c0eb52c673fa933280b7248708"), , key = "90cf5bb525c0eb52c673fa933280b7248708")
+longlist <- classification(get_uid(QSAR_less$Genus, rank_query = 'genus', rows = 1, verbose = TRUE))
+
+QSAR_sp <- rbind(longlist) 
+             
+QSAR_sp1 <- QSAR_sp %>%
+                      filter(rank == "phylum") 
+             
+QSAR_sp2 <- QSAR_sp %>%
+                      filter(rank == "genus") 
+                              
 
 
+QSAR_sp_gen <- QSAR_sp1 %>% 
+                      left_join(QSAR_sp2, by = "query") %>% 
+                      rename(Genus = name.y, phylum = name.x) %>% 
+                      select(c(4,5,1)) %>% 
+                      distinct(Genus, .keep_all = TRUE)
+
+
+
+QSAR_merge <- merge(QSAR_TOX, QSAR_sp_gen, by = "Genus", incomparables = TRUE, all = TRUE)
+  
+QSAR_merge <- QSAR_merge %>% 
+                      mutate(phyla_merge = coalesce(Phylum, phylum))
+
+QSAR_EC50 <- QSAR_merge %>% 
+              select(c(2,3:11,48,1,12:47))
 
 ```
 
